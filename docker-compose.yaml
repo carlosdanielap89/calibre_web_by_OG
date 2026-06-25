@@ -11,20 +11,30 @@ services:
     volumes:
       - calibre-config:/config
       - calibre-books:/books
-    ports:
-      - "8083:8083"
+    expose:
+      - "8083"
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.calibre.rule=Host(`calibre.160.34.219.140.sslip.io`)"
+      - "traefik.http.routers.calibre.entrypoints=http"
+      - "traefik.http.services.calibre.loadbalancer.server.port=8083"
 
   lite-reader:
     build: ./lite-reader
     container_name: lite-reader
     volumes:
       - calibre-books:/books
-    ports:
-      - "8084:8084"
+    expose:
+      - "8084"
     restart: unless-stopped
     depends_on:
       - calibre-web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.lite.rule=Host(`sony.160.34.219.140.sslip.io`)"
+      - "traefik.http.routers.lite.entrypoints=http"
+      - "traefik.http.services.lite.loadbalancer.server.port=8084"
 
 volumes:
   calibre-config:
