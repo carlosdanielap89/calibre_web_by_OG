@@ -32,6 +32,7 @@ services:
     container_name: lite-reader
     volumes:
       - calibre-books:/books
+      - calibre-config:/config:ro
     expose:
       - "8084"
     restart: unless-stopped
