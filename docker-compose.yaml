@@ -1,5 +1,9 @@
 version: "3.8"
+
 services:
+  # ─────────────────────────────────────────────
+  # Calibre-Web  →  http://calibre.160.34.219.140.sslip.io
+  # ─────────────────────────────────────────────
   calibre-web:
     image: linuxserver/calibre-web:latest
     container_name: calibre-web
@@ -20,6 +24,9 @@ services:
       - "traefik.http.routers.calibre.entrypoints=http"
       - "traefik.http.services.calibre.loadbalancer.server.port=8083"
 
+  # ─────────────────────────────────────────────
+  # Lite-Reader  →  http://sony.160.34.219.140.sslip.io
+  # ─────────────────────────────────────────────
   lite-reader:
     build: ./lite-reader
     container_name: lite-reader
@@ -35,6 +42,40 @@ services:
       - "traefik.http.routers.lite.rule=Host(`sony.160.34.219.140.sslip.io`)"
       - "traefik.http.routers.lite.entrypoints=http"
       - "traefik.http.services.lite.loadbalancer.server.port=8084"
+
+  # ─────────────────────────────────────────────
+  # Telegram Bot  (no necesita URL pública)
+  # ─────────────────────────────────────────────
+  telegram-bot:
+    build: ./telegram-bot
+    container_name: telegram-bot
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - CALIBRE_WEB_URL=http://calibre-web:8083
+      - CALIBRE_USER=${CALIBRE_USER:-admin}
+      - CALIBRE_PASS=${CALIBRE_PASS:-admin123}
+    restart: unless-stopped
+    depends_on:
+      - calibre-web
+
+  # ─────────────────────────────────────────────
+  # Mail Receiver  (no necesita URL pública)
+  # ─────────────────────────────────────────────
+  mail-receiver:
+    build: ./mail-receiver
+    container_name: mail-receiver
+    environment:
+      - IMAP_HOST=${IMAP_HOST}
+      - IMAP_USER=${IMAP_USER}
+      - IMAP_PASS=${IMAP_PASS}
+      - IMAP_PORT=${IMAP_PORT:-993}
+      - POLL_INTERVAL=${POLL_INTERVAL:-120}
+      - CALIBRE_WEB_URL=http://calibre-web:8083
+      - CALIBRE_USER=${CALIBRE_USER:-admin}
+      - CALIBRE_PASS=${CALIBRE_PASS:-admin123}
+    restart: unless-stopped
+    depends_on:
+      - calibre-web
 
 volumes:
   calibre-config:
