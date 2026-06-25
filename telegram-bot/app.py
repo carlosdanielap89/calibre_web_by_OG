@@ -22,15 +22,35 @@ CW_PASS  = os.getenv("CALIBRE_PASS", "admin123")
 ALLOWED_EXTS = {".epub", ".pdf", ".mobi", ".azw3", ".cbz", ".cbr"}
 
 
-def get_session() -> requests.Session:
-    """Inicia sesión en Calibre-Web y devuelve la sesión autenticada."""
+def get_session() -> tuple[requests.Session, str]:
+    """Inicia sesión en Calibre-Web.
+    Devuelve (session, csrf_token).
+    Calibre-Web usa Flask-WTF, todos los POST necesitan CSRF."""
     s = requests.Session()
+    # 1) GET /login → obtener CSRF token
+    login_page = s.get(f"{CW_URL}/login", timeout=10)
+    csrf_token = ""
+    import re as _re
+    m = _re.search(r'name="csrf_token"[^>]*value="([^"]+)"', login_page.text)
+    if m:
+        csrf_token = m.group(1)
+    # 2) POST /login con CSRF
     s.post(
         f"{CW_URL}/login",
-        data={"username": CW_USER, "password": CW_PASS, "remember_me": "on"},
+        data={
+            "username": CW_USER,
+            "password": CW_PASS,
+            "remember_me": "on",
+            "csrf_token": csrf_token,
+        },
         timeout=10,
     )
-    return s
+    # 3) Refrescar CSRF para los siguientes requests (la sesión ya está activa)
+    upload_page = s.get(f"{CW_URL}/upload", timeout=10)
+    m2 = _re.search(r'name="csrf_token"[^>]*value="([^"]+)"', upload_page.text)
+    if m2:
+        csrf_token = m2.group(1)
+    return s, csrf_token
 
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -69,11 +89,12 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await tg_file.download_to_drive(tmp_path)
         await msg.edit_text("📤 Subiendo a Calibre-Web…")
 
-        session = get_session()
+        session, csrf_token = get_session()
         with open(tmp_path, "rb") as f:
             resp = session.post(
                 f"{CW_URL}/upload",
                 files={"btn-upload": (fname, f)},
+                data={"csrf_token": csrf_token},
                 timeout=60,
             )
 
@@ -81,8 +102,7 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await msg.edit_text(f"✅ *{fname}* añadido a tu biblioteca.", parse_mode="Markdown")
         else:
             await msg.edit_text(
-                f"⚠️ Calibre-Web respondió HTTP {resp.status_code}. "
-                "Verifica que el usuario tenga permisos de subida."
+                f"⚠️ Error HTTP {resp.status_code} al subir."
             )
     except Exception as e:
         logging.error(e)
