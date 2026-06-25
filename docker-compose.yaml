@@ -1,0 +1,22 @@
+version: "3.8"
+services:
+  calibre-web:
+    image: linuxserver/calibre-web:latest
+    container_name: calibre-web
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/Mexico_City
+      - DOCKER_MODS=linuxserver/calibre-web:calibre
+    volumes:
+      - calibre-config:/config
+      - calibre-books:/books
+    ports:
+      - "8083:8083"
+    restart: unless-stopped
+
+volumes:
+  calibre-config:
+    name: calibre-config
+  calibre-books:
+    name: calibre-books
