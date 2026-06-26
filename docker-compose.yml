@@ -50,6 +50,8 @@ services:
   telegram-bot:
     build: ./telegram-bot
     container_name: telegram-bot
+    volumes:
+      - calibre-books:/books
     environment:
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
       - CALIBRE_WEB_URL=http://calibre-web:8083

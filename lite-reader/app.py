@@ -5,10 +5,19 @@ from flask import Flask, render_template_string, send_file, abort, request, redi
 
 app = Flask(__name__)
 
-BOOKS_DIR = "/books"
-DB_PATH = os.path.join(BOOKS_DIR, "metadata.db")
+BOOKS_DIR    = "/books"
+DB_PATH      = os.path.join(BOOKS_DIR, "metadata.db")
 LITE_DB_PATH = os.path.join(BOOKS_DIR, "lite_reader.db")
 CALIBRE_APP_DB = "/config/app.db"
+WALL_DIR     = os.path.join(BOOKS_DIR, "wallpapers")
+
+IMAGE_MIMES = {
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png":  "image/png",
+    ".gif":  "image/gif",
+    ".bmp":  "image/bmp",
+}
 
 # MIME types que el Sony Reader PRS-T1 entiende
 MIME_TYPES = {
@@ -152,6 +161,7 @@ HTML = """<!doctype html>
   <a href="/?view=date&show_hidden={{ show_hidden }}" class="nav-link {% if view == 'date' %}active{% endif %}">Fecha Subida</a>
   <a href="/?view=shelves&show_hidden={{ show_hidden }}" class="nav-link {% if view == 'shelves' %}active{% endif %}">Estanterías</a>
   <a href="/?view=all&show_hidden={{ show_hidden }}" class="nav-link {% if view == 'all' %}active{% endif %}">Todos</a>
+  <a href="/?view=wallpapers&show_hidden={{ show_hidden }}" class="nav-link {% if view == 'wallpapers' %}active{% endif %}">&#128444; Fondos</a>
 </div>
 
 <div class="filter-bar">
@@ -164,6 +174,40 @@ HTML = """<!doctype html>
   {% endif %}
 </div>
 
+{% if view == 'wallpapers' %}
+  {% if groups %}
+    {% for group in groups %}
+      <div class="group-title">{{ group.name }}</div>
+      <ul>
+      {% for w in group.books %}
+        <li>
+          <table class="book-table">
+            <tr>
+              <td valign="top" style="width: 70px; padding-right: 10px;">
+                <img src="/wallpaper-thumb/{{ w.filename }}" width="60" height="60" alt="" style="border: 1px solid #999999; display: block; object-fit: cover;" />
+              </td>
+              <td valign="top">
+                <span class="book-title" style="font-size:16px;">{{ w.name }}</span>
+                <span class="book-author">{{ w.info }}</span>
+                <div class="actions">
+                  <a href="/download-wallpaper/{{ w.filename }}?view=wallpapers&show_hidden={{ show_hidden }}" class="btn btn-download">Descargar</a>
+                  {% if w.is_hidden %}
+                    <a href="/unhide-wallpaper/{{ w.filename }}?view=wallpapers&show_hidden={{ show_hidden }}" class="btn btn-show">Mostrar</a>
+                  {% else %}
+                    <a href="/hide-wallpaper/{{ w.filename }}?view=wallpapers&show_hidden={{ show_hidden }}" class="btn btn-hide">Ocultar</a>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+          </table>
+        </li>
+      {% endfor %}
+      </ul>
+    {% endfor %}
+  {% else %}
+    <p class="empty-msg">No hay fondos de pantalla todavía.<br>Envía una foto o imagen al bot de Telegram.</p>
+  {% endif %}
+{% else %}
 {% if groups %}
   {% for group in groups %}
     <div class="group-title">{{ group.name }}</div>
@@ -198,6 +242,7 @@ HTML = """<!doctype html>
 {% else %}
   <p class="empty-msg">No se encontraron libros para esta vista.</p>
 {% endif %}
+{% endif %}
 
 </body>
 </html>"""
@@ -210,6 +255,11 @@ def init_lite_db():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS hidden_books (
                 book_id INTEGER PRIMARY KEY
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS hidden_wallpapers (
+                filename TEXT PRIMARY KEY
             )
         """)
         conn.commit()
@@ -414,12 +464,84 @@ def index():
                 "books": sorted_books
             })
 
+    if view == "wallpapers":
+        walls = get_wallpapers(show_hidden)
+        groups = [{"name": "Fondos de pantalla", "books": walls}] if walls else []
+
     return render_template_string(
         HTML,
         groups=groups,
         view=view,
         show_hidden=1 if show_hidden else 0
     )
+
+
+def get_wallpapers(show_hidden: bool) -> list:
+    """Returns wallpaper files from WALL_DIR, sorted newest-first."""
+    if not os.path.isdir(WALL_DIR):
+        return []
+
+    hidden = get_hidden_wallpapers()
+    walls  = []
+    for fname in sorted(os.listdir(WALL_DIR), reverse=True):
+        ext = os.path.splitext(fname)[1].lower()
+        if ext not in IMAGE_MIMES:
+            continue
+        is_hidden = fname in hidden
+        if not show_hidden and is_hidden:
+            continue
+        try:
+            size_kb = os.path.getsize(os.path.join(WALL_DIR, fname)) / 1024
+        except Exception:
+            size_kb = 0
+        fmt_map = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG",
+                   ".gif": "GIF", ".bmp": "BMP"}
+        walls.append({
+            "filename":  fname,
+            "name":      fname,
+            "info":      f"{fmt_map.get(ext, ext.upper())} — {size_kb:.1f} KB",
+            "is_hidden": is_hidden,
+        })
+    return walls
+
+
+def get_hidden_wallpapers() -> set:
+    if not os.path.exists(LITE_DB_PATH):
+        return set()
+    try:
+        conn = sqlite3.connect(LITE_DB_PATH)
+        cur  = conn.cursor()
+        cur.execute("SELECT filename FROM hidden_wallpapers")
+        result = {row[0] for row in cur.fetchall()}
+        conn.close()
+        return result
+    except Exception as e:
+        print(f"Error reading hidden wallpapers: {e}")
+        return set()
+
+
+def hide_wallpaper(filename: str):
+    init_lite_db()
+    try:
+        conn = sqlite3.connect(LITE_DB_PATH)
+        cur  = conn.cursor()
+        cur.execute("INSERT OR IGNORE INTO hidden_wallpapers (filename) VALUES (?)", (filename,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error hiding wallpaper {filename}: {e}")
+
+
+def unhide_wallpaper(filename: str):
+    init_lite_db()
+    try:
+        conn = sqlite3.connect(LITE_DB_PATH)
+        cur  = conn.cursor()
+        cur.execute("DELETE FROM hidden_wallpapers WHERE filename = ?", (filename,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error unhiding wallpaper {filename}: {e}")
 
 
 @app.route("/hide/<int:book_id>")
@@ -488,6 +610,44 @@ def download(book_id, filename):
         as_attachment=True,
         download_name=filename,
     )
+
+
+@app.route("/wallpaper-thumb/<path:filename>")
+def wallpaper_thumb(filename):
+    safe = os.path.basename(filename)
+    path = os.path.join(WALL_DIR, safe)
+    if not os.path.exists(path):
+        abort(404)
+    ext = os.path.splitext(safe)[1].lower()
+    return send_file(path, mimetype=IMAGE_MIMES.get(ext, "image/jpeg"))
+
+
+@app.route("/download-wallpaper/<path:filename>")
+def download_wallpaper(filename):
+    safe = os.path.basename(filename)
+    path = os.path.join(WALL_DIR, safe)
+    if not os.path.exists(path):
+        abort(404)
+    hide_wallpaper(safe)
+    ext  = os.path.splitext(safe)[1].lower()
+    mime = IMAGE_MIMES.get(ext, "application/octet-stream")
+    return send_file(path, mimetype=mime, as_attachment=True, download_name=safe)
+
+
+@app.route("/hide-wallpaper/<path:filename>")
+def hide_wall(filename):
+    safe = os.path.basename(filename)
+    hide_wallpaper(safe)
+    show_hidden = request.args.get("show_hidden", "0")
+    return redirect(url_for("index", view="wallpapers", show_hidden=show_hidden))
+
+
+@app.route("/unhide-wallpaper/<path:filename>")
+def unhide_wall(filename):
+    safe = os.path.basename(filename)
+    unhide_wallpaper(safe)
+    show_hidden = request.args.get("show_hidden", "0")
+    return redirect(url_for("index", view="wallpapers", show_hidden=show_hidden))
 
 
 if __name__ == "__main__":
