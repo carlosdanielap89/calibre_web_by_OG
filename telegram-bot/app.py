@@ -1,9 +1,11 @@
 import os
+import io
 import logging
 import tempfile
 import requests
 from datetime import datetime
 from pathlib import Path
+from PIL import Image
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -24,6 +26,11 @@ WALL_DIR    = os.path.join(BOOKS_DIR, "wallpapers")
 
 ALLOWED_BOOK_EXTS  = {".epub", ".pdf", ".mobi", ".azw3", ".cbz", ".cbr"}
 ALLOWED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp"}
+
+# Sony PRS-T1 screen: 600x800 px. We cap images to this for e-ink.
+EINK_MAX_W = 600
+EINK_MAX_H = 800
+JPEG_QUALITY = 65   # Good enough for e-ink, much smaller file
 
 
 def get_session() -> tuple[requests.Session, str]:
@@ -70,6 +77,36 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def compress_for_eink(src_path: str, dest_path: str, src_ext: str) -> tuple[int, int]:
+    """
+    Resizes the image to fit within 600x800 px (Sony PRS-T1 screen),
+    converts to grayscale-friendly JPEG at 65% quality.
+    GIF files are saved unchanged (Sony only shows first frame anyway).
+    Returns (original_kb, compressed_kb).
+    """
+    orig_kb = os.path.getsize(src_path) // 1024
+
+    # GIF: save as-is, no compression needed (tiny usually)
+    if src_ext == ".gif":
+        import shutil
+        shutil.copy2(src_path, dest_path)
+        compressed_kb = os.path.getsize(dest_path) // 1024
+        return orig_kb, compressed_kb
+
+    with Image.open(src_path) as img:
+        # Convert to RGB so JPEG save always works (handles RGBA PNG, P mode, etc.)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+
+        # Resize to fit within EINK_MAX_W x EINK_MAX_H preserving aspect ratio
+        img.thumbnail((EINK_MAX_W, EINK_MAX_H), Image.LANCZOS)
+
+        img.save(dest_path, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+
+    compressed_kb = os.path.getsize(dest_path) // 1024
+    return orig_kb, compressed_kb
+
+
 def ensure_wall_dir():
     os.makedirs(WALL_DIR, exist_ok=True)
 
@@ -90,26 +127,36 @@ def unique_filename(directory: str, filename: str) -> str:
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """El usuario envió una foto comprimida por Telegram."""
     photo = update.message.photo[-1]  # Mayor resolución disponible
-    msg   = await update.message.reply_text("⏳ Descargando imagen…")
+    msg   = await update.message.reply_text("⏳ Descargando y optimizando imagen…")
     tg_file = await ctx.bot.get_file(photo.file_id)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = f"fondo_{timestamp}.jpg"
+    base_fname = f"fondo_{timestamp}"
 
     ensure_wall_dir()
-    fname = unique_filename(WALL_DIR, fname)
-    dest  = os.path.join(WALL_DIR, fname)
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp_path = tmp.name
 
     try:
-        await tg_file.download_to_drive(dest)
+        await tg_file.download_to_drive(tmp_path)
+        fname     = unique_filename(WALL_DIR, base_fname + ".jpg")
+        dest      = os.path.join(WALL_DIR, fname)
+        orig_kb, comp_kb = compress_for_eink(tmp_path, dest, ".jpg")
         await msg.edit_text(
             f"🖼️ *{fname}* guardado como fondo de pantalla.\n"
+            f"📦 {orig_kb} KB → {comp_kb} KB (e-ink optimizado)\n"
             "Ya puedes descargarlo desde la pestaña *Fondos* en tu Sony.",
             parse_mode="Markdown",
         )
     except Exception as e:
         logging.error(e)
         await msg.edit_text(f"❌ Error guardando imagen: {e}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 
 async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -120,31 +167,47 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     fname = doc.file_name or "archivo"
     ext   = Path(fname).suffix.lower()
 
-    # ── Imagen → guardar como fondo de pantalla ───────────────────────────────
+    # ── Imagen → guardar como fondo de pantalla optimizado ─────────────────
     if ext in ALLOWED_IMAGE_EXTS:
-        msg = await update.message.reply_text("⏳ Descargando imagen…")
+        msg = await update.message.reply_text("⏳ Descargando y optimizando imagen…")
         tg_file = await ctx.bot.get_file(doc.file_id)
         ensure_wall_dir()
-        safe_fname = unique_filename(WALL_DIR, fname)
-        dest = os.path.join(WALL_DIR, safe_fname)
+
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp_path = tmp.name
+
         try:
-            await tg_file.download_to_drive(dest)
+            await tg_file.download_to_drive(tmp_path)
+            # GIF saved as-is, everything else becomes JPEG
+            dest_ext  = ext if ext == ".gif" else ".jpg"
+            base_name = Path(fname).stem + dest_ext
+            safe_fname = unique_filename(WALL_DIR, base_name)
+            dest = os.path.join(WALL_DIR, safe_fname)
+            orig_kb, comp_kb = compress_for_eink(tmp_path, dest, ext)
             await msg.edit_text(
                 f"🖼️ *{safe_fname}* guardado como fondo de pantalla.\n"
+                f"📦 {orig_kb} KB → {comp_kb} KB (e-ink optimizado)\n"
                 "Ya puedes descargarlo desde la pestaña *Fondos* en tu Sony.",
                 parse_mode="Markdown",
             )
         except Exception as e:
             logging.error(e)
-            await msg.edit_text(f"❌ Error guardando imagen: {e}")
+            await msg.edit_text(f"❌ Error procesando imagen: {e}")
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
         return
 
     # ── Libro → subir a Calibre-Web ───────────────────────────────────────────
     if ext not in ALLOWED_BOOK_EXTS:
         await update.message.reply_text(
-            f"❌ Formato *{ext}* no reconocido.\n\n"
-            f"📖 Libros: {', '.join(sorted(ALLOWED_BOOK_EXTS))}\n"
-            f"🖼️ Imágenes: {', '.join(sorted(ALLOWED_IMAGE_EXTS))}",
+            f"❌ *{ext}* no es compatible con el Sony PRS-T1.\n\n"
+            f"📖 *Formatos de libro aceptados:*\n"
+            f"  `{chr(10).join(sorted(ALLOWED_BOOK_EXTS))}`\n\n"
+            f"🖼️ *Formatos de imagen aceptados:*\n"
+            f"  `{chr(10).join(sorted(ALLOWED_IMAGE_EXTS))}`",
             parse_mode="Markdown",
         )
         return
