@@ -91,6 +91,11 @@ HTML = """<!doctype html>
     border-bottom: 1px solid #dddddd;
     padding: 10px 4px;
   }
+  .book-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 0;
+  }
   .book-title {
     font-size: 18px;
     font-weight: bold;
@@ -165,16 +170,27 @@ HTML = """<!doctype html>
     <ul>
     {% for b in group.books %}
       <li>
-        <span class="book-title">{{ b.title }}</span>
-        <span class="book-author">{{ b.author }}</span>
-        <div class="actions">
-          <a href="/download/{{ b.id }}/{{ b.filename }}?view={{ view }}&show_hidden={{ show_hidden }}" class="btn btn-download">Descargar</a>
-          {% if b.is_hidden %}
-            <a href="/unhide/{{ b.id }}?view={{ view }}&show_hidden={{ show_hidden }}" class="btn btn-show">Mostrar</a>
-          {% else %}
-            <a href="/hide/{{ b.id }}?view={{ view }}&show_hidden={{ show_hidden }}" class="btn btn-hide">Ocultar</a>
-          {% endif %}
-        </div>
+        <table class="book-table">
+          <tr>
+            {% if b.has_cover %}
+            <td valign="top" style="width: 55px; padding-right: 10px;">
+              <img src="/cover/{{ b.id }}" width="45" height="65" alt="" style="border: 1px solid #999999; display: block;" />
+            </td>
+            {% endif %}
+            <td valign="top">
+              <span class="book-title">{{ b.title }}</span>
+              <span class="book-author">{{ b.author }}</span>
+              <div class="actions">
+                <a href="/download/{{ b.id }}/{{ b.filename }}?view={{ view }}&show_hidden={{ show_hidden }}" class="btn btn-download">Descargar</a>
+                {% if b.is_hidden %}
+                  <a href="/unhide/{{ b.id }}?view={{ view }}&show_hidden={{ show_hidden }}" class="btn btn-show">Mostrar</a>
+                {% else %}
+                  <a href="/hide/{{ b.id }}?view={{ view }}&show_hidden={{ show_hidden }}" class="btn btn-hide">Ocultar</a>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+        </table>
       </li>
     {% endfor %}
     </ul>
@@ -308,12 +324,14 @@ def get_books():
         for fname in sorted(os.listdir(book_path)):
             ext = os.path.splitext(fname)[1].lower()
             if ext in MIME_TYPES:
+                has_cover = os.path.exists(os.path.join(book_path, "cover.jpg"))
                 books.append({
                     "id": row["id"],
                     "title": row["title"],
                     "author": row["author"],
                     "timestamp": row["timestamp"],
                     "filename": fname,
+                    "has_cover": has_cover,
                 })
                 break
     return books
@@ -418,6 +436,30 @@ def unhide(book_id):
     view = request.args.get("view", "date")
     show_hidden = request.args.get("show_hidden", "0")
     return redirect(url_for("index", view=view, show_hidden=show_hidden))
+
+
+@app.route("/cover/<int:book_id>")
+def cover(book_id):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur  = conn.cursor()
+        cur.execute("SELECT path FROM books WHERE id = ?", (book_id,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            abort(404)
+
+        cover_path = os.path.join(BOOKS_DIR, row[0], "cover.jpg")
+        if not os.path.exists(cover_path):
+            abort(404)
+
+        return send_file(
+            cover_path,
+            mimetype="image/jpeg",
+        )
+    except Exception as e:
+        print(f"Error serving cover for book {book_id}: {e}")
+        abort(404)
 
 
 @app.route("/download/<int:book_id>/<path:filename>")
