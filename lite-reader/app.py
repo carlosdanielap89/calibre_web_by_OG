@@ -145,7 +145,12 @@ HTML = """<!doctype html>
     background-color: #dddddd;
     border-color: #555555;
   }
-  
+  .btn-delete {
+    background-color: #333333;
+    color: #ffffff;
+    border-color: #222222;
+  }
+
   .empty-msg {
     color: #666666;
     font-style: italic;
@@ -196,6 +201,7 @@ HTML = """<!doctype html>
                   {% else %}
                     <a href="/hide-wallpaper/{{ w.filename }}?view=wallpapers&show_hidden={{ show_hidden }}" class="btn btn-hide">Ocultar</a>
                   {% endif %}
+                  <a href="/delete-wallpaper/{{ w.filename }}?view=wallpapers&show_hidden={{ show_hidden }}" class="btn btn-delete">Eliminar</a>
                 </div>
               </td>
             </tr>
@@ -231,6 +237,7 @@ HTML = """<!doctype html>
                 {% else %}
                   <a href="/hide/{{ b.id }}?view={{ view }}&show_hidden={{ show_hidden }}" class="btn btn-hide">Ocultar</a>
                 {% endif %}
+                <a href="/delete-book/{{ b.id }}?view={{ view }}&show_hidden={{ show_hidden }}" class="btn btn-delete">Eliminar</a>
               </div>
             </td>
           </tr>
@@ -648,6 +655,104 @@ def unhide_wall(filename):
     unhide_wallpaper(safe)
     show_hidden = request.args.get("show_hidden", "0")
     return redirect(url_for("index", view="wallpapers", show_hidden=show_hidden))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Delete routes
+# ─────────────────────────────────────────────────────────────────────────────
+
+def delete_wallpaper_file(filename: str) -> bool:
+    """Deletes wallpaper from disk and removes from hidden_wallpapers table."""
+    safe = os.path.basename(filename)
+    path = os.path.join(WALL_DIR, safe)
+    try:
+        if os.path.exists(path):
+            os.unlink(path)
+        # Clean up hidden_wallpapers table
+        try:
+            conn = sqlite3.connect(LITE_DB_PATH)
+            cur  = conn.cursor()
+            cur.execute("DELETE FROM hidden_wallpapers WHERE filename = ?", (safe,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        print(f"Error deleting wallpaper {safe}: {e}")
+        return False
+
+
+def delete_book(book_id: int) -> bool:
+    """Deletes book from filesystem and from metadata.db. Returns True on success."""
+    import shutil as _shutil
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur  = conn.cursor()
+        cur.execute("SELECT path FROM books WHERE id = ?", (book_id,))
+        row  = cur.fetchone()
+        if not row:
+            conn.close()
+            return False
+
+        book_path = os.path.join(BOOKS_DIR, row[0])
+
+        # Remove from all related tables
+        for table, col in [
+            ("books_authors_link",    "book"),
+            ("books_tags_link",       "book"),
+            ("books_ratings_link",    "book"),
+            ("books_series_link",     "book"),
+            ("books_publishers_link", "book"),
+            ("books_languages_link",  "book"),
+            ("data",                  "book"),
+            ("comments",              "book"),
+            ("identifiers",           "book"),
+        ]:
+            try:
+                cur.execute(f"DELETE FROM {table} WHERE {col} = ?", (book_id,))
+            except Exception:
+                pass
+
+        cur.execute("DELETE FROM books WHERE id = ?", (book_id,))
+        conn.commit()
+        conn.close()
+
+        # Delete filesystem directory
+        if os.path.isdir(book_path):
+            _shutil.rmtree(book_path)
+
+        # Remove from hidden_books if present
+        try:
+            lconn = sqlite3.connect(LITE_DB_PATH)
+            lcur  = lconn.cursor()
+            lcur.execute("DELETE FROM hidden_books WHERE book_id = ?", (book_id,))
+            lconn.commit()
+            lconn.close()
+        except Exception:
+            pass
+
+        return True
+    except Exception as e:
+        print(f"Error deleting book {book_id}: {e}")
+        return False
+
+
+@app.route("/delete-wallpaper/<path:filename>")
+def delete_wall(filename):
+    safe = os.path.basename(filename)
+    delete_wallpaper_file(safe)
+    view        = request.args.get("view", "wallpapers")
+    show_hidden = request.args.get("show_hidden", "0")
+    return redirect(url_for("index", view=view, show_hidden=show_hidden))
+
+
+@app.route("/delete-book/<int:book_id>")
+def delete_book_route(book_id):
+    delete_book(book_id)
+    view        = request.args.get("view", "date")
+    show_hidden = request.args.get("show_hidden", "0")
+    return redirect(url_for("index", view=view, show_hidden=show_hidden))
 
 
 if __name__ == "__main__":
